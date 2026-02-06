@@ -39,8 +39,7 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
           ls -la
-
-      - name: Build wxWidgets (static, UNICODE, release, MINGW32)
+- name: Build wxWidgets (static, UNICODE, release, MINGW32)
         shell: msys2 {0}
         run: |
           set -euxo pipefail
