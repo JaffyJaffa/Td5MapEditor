@@ -45,12 +45,14 @@ jobs:
         run: |
           set -euxo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
+
+          # ВАЖНО: makefile.gcc копирует/генерит setup.h в lib/gcc_lib/mswu/wx
+          # и падает, если папки не существуют.
+          mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
+
           cd "$WXWIN/build/msw"
+          mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
 
-          # Сборка через makefile.gcc — типовой путь для MinGW 1
-          mingw32-make -j2 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
-
-          # Экспортируем переменные для следующих шагов
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
       - name: Build Td5MapEditor from Code::Blocks .cbp (custom parser)
