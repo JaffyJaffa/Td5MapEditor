@@ -52,18 +52,16 @@ jobs:
           LOG="$PWD/wx-build.log"
           echo "Building wxWidgets, log: $LOG"
 
-          # run make -> log to file; if it fails, print tail so error is visible
-          (mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0) >"$LOG" 2>&1 || {
+          (mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 HAVE_W32API_H=0) >"$LOG" 2>&1 || {
             echo "wxWidgets build FAILED. Last 250 lines of log:"
             tail -n 250 "$LOG" || true
             exit 1
           }
 
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
-
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
-      - name: Build Td5MapEditor (auto-find .cbp) with link cmd + log tail on failure
+      - name: Build Td5MapEditor (auto-find .cbp)
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -74,7 +72,6 @@ jobs:
 
           root = Path(os.getcwd())
 
-          # Auto-find .cbp
           candidates = list(root.rglob("*.cbp"))
           if not candidates:
               raise SystemExit("No .cbp found anywhere in repo")
@@ -170,7 +167,6 @@ jobs:
                   continue
               libflags.append(l if l.startswith("-l") else libflag(l))
 
-          # Fallback wx libs (шире, чтобы не споткнуться на xrc/html/xml/net)
           if not have_wx:
               libflags += [
                   "-lwxmsw28u_core",
