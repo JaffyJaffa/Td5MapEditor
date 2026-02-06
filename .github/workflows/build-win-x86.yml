@@ -50,18 +50,32 @@ jobs:
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
-      - name: Build Td5MapEditor (parse .cbp)
+      - name: Build Td5MapEditor (auto-find .cbp, verbose diagnostics)
         shell: msys2 {0}
         run: |
           set -euo pipefail
+
+          echo "Repo root:"
+          pwd
+          echo "Top-level files:"
+          ls -la
+
+          echo "WXWIN=$WXWIN"
+          echo "wx lib dir contents:"
+          ls -la "$WXWIN/lib/gcc_lib" || true
+
           python - << 'PY'
           import os, subprocess, xml.etree.ElementTree as ET
           from pathlib import Path
 
           root = Path(os.getcwd())
-          cbp = root / "td5mapeditor.cbp"
-          if not cbp.exists():
-              raise SystemExit(f"CBP not found: {cbp}")
+
+          # Auto-find .cbp to avoid case/path issues
+          candidates = list(root.rglob("*.cbp"))
+          if not candidates:
+              raise SystemExit("No .cbp found anywhere in repo")
+          cbp = candidates[0]
+          print("Using CBP:", cbp)
 
           wxwin = Path(os.environ["WXWIN"])
           wx_cfg_inc = wxwin / "lib" / "gcc_lib" / "mswu"
@@ -146,14 +160,24 @@ jobs:
 
           libflags = []
           have_wx = any("wx" in l.lower() for l in libs)
+
           for l in libs:
               l = l.strip()
               if not l:
                   continue
               libflags.append(l if l.startswith("-l") else libflag(l))
 
+          # Fallback wx libs if not listed in cbp
           if not have_wx:
-              libflags += ["-lwxmsw28u_core", "-lwxbase28u", "-lwxmsw28u_adv"]
+              libflags += [
+                  "-lwxmsw28u_core",
+                  "-lwxmsw28u_adv",
+                  "-lwxmsw28u_html",
+                  "-lwxmsw28u_xrc",
+                  "-lwxbase28u",
+                  "-lwxbase28u_xml",
+                  "-lwxbase28u_net",
+              ]
 
           libflags += [f"-l{s}" for s in syslibs]
 
@@ -164,9 +188,15 @@ jobs:
           libdirflags = [f"-L{d}" for d in lib_dirs if d]
 
           out_exe = bdir / "Td5MapEditor.exe"
-          subprocess.check_call([cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags])
+          cmd = [cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags]
+          print("Link cmd:", " ".join(cmd))
+          subprocess.check_call(cmd)
+
           print("Built:", out_exe)
           PY
+
+          echo "Build output dir:"
+          ls -la build-win-x86 || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
