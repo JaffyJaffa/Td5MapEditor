@@ -42,17 +42,11 @@ jobs:
         run: |
           set -euo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
-
-          # Ensure setup.h destination exists
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
-
           cd "$WXWIN/build/msw"
-
           export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition"
           export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough"
-
           mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
-
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
@@ -60,7 +54,6 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-
           python - << 'PY'
           import os, subprocess, xml.etree.ElementTree as ET
           from pathlib import Path
