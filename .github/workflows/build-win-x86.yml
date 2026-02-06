@@ -1,0 +1,219 @@
+name: build-win-x86
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 (MINGW32)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            mingw-w64-i686-toolchain
+            mingw-w64-i686-make
+            mingw-w64-i686-cmake
+            unzip
+            zip
+            git
+            python
+
+      - name: Download wxWidgets 2.8.12 sources
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          mkdir -p deps
+          cd deps
+          # Исходники wxWidgets 2.8.12 (SourceForge)
+          # Можно заменить на другой mirror при желании.
+          curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
+          unzip -q wxWidgets-2.8.12.zip
+          ls -la
+
+      - name: Build wxWidgets (static, UNICODE, release, MINGW32)
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          WXWIN="$PWD/deps/wxWidgets-2.8.12"
+          cd "$WXWIN/build/msw"
+
+          # Сборка через makefile.gcc — типовой путь для MinGW 1
+          mingw32-make -j2 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
+
+          # Экспортируем переменные для следующих шагов
+          echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
+
+      - name: Build Td5MapEditor from Code::Blocks .cbp (custom parser)
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+
+          python - << 'PY'
+          import os, sys, subprocess, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          root = Path(os.getcwd())
+          cbp = root / "td5mapeditor.cbp"
+          if not cbp.exists():
+            raise SystemExit(f"CBP not found: {cbp}")
+
+          wxwin = Path(os.environ["WXWIN"])
+          # wx 2.8 MinGW обычно кладёт конфиг-хедер сюда:
+          wx_cfg_inc = wxwin / "lib" / "gcc_lib" / "mswu"
+          wx_inc = wxwin / "include"
+          wx_lib = wxwin / "lib" / "gcc_lib"
+
+          # --- parse cbp ---
+          tree = ET.parse(cbp)
+          proj = tree.getroot()
+
+          # Code::Blocks cbp обычно без namespace, но на всякий случай:
+          def strip(tag: str) -> str:
+            return tag.split("}", 1)[-1]
+
+          # Выберем "Release" если есть, иначе первый target.
+          targets = []
+          for t in proj.iter():
+            if strip(t.tag) == "Target":
+              targets.append(t)
+          if not targets:
+            raise SystemExit("No <Target> found in .cbp")
+
+          target = None
+          for t in targets:
+            title = t.attrib.get("title","")
+            if title.lower() == "release":
+              target = t
+              break
+          if target is None:
+            target = targets[0]
+
+          # Соберём список исходников (.cpp/.c) из Unit
+          sources = []
+          for u in proj.iter():
+            if strip(u.tag) == "Unit":
+              fn = u.attrib.get("filename","")
+              if fn.lower().endswith((".cpp",".c",".cc",".cxx")):
+                sources.append(root / fn)
+          if not sources:
+            raise SystemExit("No source files found in <Unit> entries")
+
+          # include dirs / lib dirs / libs — из Add / Option (часто так)
+          include_dirs = set()
+          lib_dirs = set()
+          libs = []
+
+          for node in target.iter():
+            tag = strip(node.tag)
+            if tag == "Add":
+              if "directory" in node.attrib and node.attrib.get("directory"):
+                # может быть и include-dir, и lib-dir — различим по контексту сложно,
+                # поэтому просто соберём всё и разделим ниже эвристикой
+                pass
+              if "library" in node.attrib and node.attrib.get("library"):
+                libs.append(node.attrib["library"])
+              if "include" in node.attrib and node.attrib.get("include"):
+                include_dirs.add(node.attrib["include"])
+
+          # Более надёжно: в cbp include/lib dirs обычно как:
+          # <Compiler> <Add directory="..."/>
+          # <Linker>   <Add directory="..."/>  <Add library="..."/>
+          for comp in target.iter():
+            if strip(comp.tag) == "Compiler":
+              for a in comp:
+                if strip(a.tag) == "Add" and "directory" in a.attrib:
+                  include_dirs.add(a.attrib["directory"])
+            if strip(comp.tag) == "Linker":
+              for a in comp:
+                if strip(a.tag) == "Add":
+                  if "directory" in a.attrib:
+                    lib_dirs.add(a.attrib["directory"])
+                  if "library" in a.attrib:
+                    libs.append(a.attrib["library"])
+
+          # Добавим wx include/lib (важно)
+          include_dirs.update([str(wx_inc), str(wx_cfg_inc)])
+          lib_dirs.add(str(wx_lib))
+
+          # build dir
+          bdir = root / "build-win-x86"
+          bdir.mkdir(exist_ok=True)
+
+          cxx = "g++"
+          ar = "ar"
+
+          # CXXFLAGS: оптимизация + Win32 GUI subsystem обычно задаётся на линке.
+          cxxflags = [
+            "-O2", "-pipe",
+            "-D__WXMSW__", "-DwxUSE_UNICODE=1",
+            "-static-libgcc", "-static-libstdc++",
+          ]
+          incflags = [f"-I{d}" for d in include_dirs if d]
+
+          objects = []
+          for src in sources:
+            if not src.exists():
+              raise SystemExit(f"Missing source: {src}")
+            obj = bdir / (src.stem + ".o")
+            cmd = [cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags]
+            subprocess.check_call(cmd)
+            objects.append(obj)
+
+          # Линковка: используем libs из cbp; если там нет wx*, добавим минимальный набор.
+          # В wx 2.8 обычно нужны системные либы Windows:
+          syslibs = ["comctl32", "comdlg32", "gdi32", "winspool", "winmm",
+                     "shell32", "shlwapi", "ole32", "oleaut32", "uuid", "rpcrt4", "advapi32", "ws2_32"]
+
+          # нормализуем либы: если в cbp они уже как "wxmsw28u_core", ок.
+          def libflag(name: str) -> str:
+            # если пользователь указал "libXXX.a" — передадим как есть через -l? нельзя.
+            # в cbp почти всегда "wxmsw28u_core" без lib/.a.
+            return f"-l{name}"
+
+          libflags = []
+          have_wx = any("wx" in l.lower() for l in libs)
+          for l in libs:
+            l = l.strip()
+            if not l:
+              continue
+            # если уже начинается с -l
+            if l.startswith("-l"):
+              libflags.append(l)
+            else:
+              libflags.append(libflag(l))
+
+          if not have_wx:
+            # fallback (если cbp не содержит wx libs)
+            # wx 2.8 unicode split libs (core/base/adv/...)
+            libflags += [ "-lwxmsw28u_core", "-lwxbase28u", "-lwxmsw28u_adv" ]
+
+          libflags += [f"-l{s}" for s in syslibs]
+
+          ldflags = [
+            "-Wl,--subsystem,windows",
+            "-static-libgcc", "-static-libstdc++",
+          ]
+          libdirflags = [f"-L{d}" for d in lib_dirs if d]
+
+          out_exe = bdir / "Td5MapEditor.exe"
+          link_cmd = [cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags]
+          subprocess.check_call(link_cmd)
+
+          print("Built:", out_exe)
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Td5MapEditor-win-x86
+          path: build-win-x86/Td5MapEditor.exe
