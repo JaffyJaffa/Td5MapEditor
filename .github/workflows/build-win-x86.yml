@@ -27,7 +27,6 @@ jobs:
             git
             python
             curl
-            patch
 
       - name: Download wxWidgets 2.8.12 sources
         shell: msys2 {0}
@@ -38,30 +37,46 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
 
-      - name: Patch wxWidgets 2.8.12 treectrl.cpp for MinGW headers
+      - name: Patch wxWidgets 2.8.12 treectrl.cpp to avoid NMTVITEMCHANGE on older headers
         shell: msys2 {0}
         run: |
           set -euo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
           FILE="$WXWIN/src/msw/treectrl.cpp"
 
-          # Вставляем fallback typedef ТОЛЬКО если NMTVITEMCHANGE отсутствует.
-          # Никаких include windows.h/commctrl.h тут не делаем — они уже подключены wx корректно.
-          # Ищем место после #include "wx/wxprec.h" (оно есть почти всегда).
+          # 1) Уберём, если ты ранее добавлял свой typedef NMTVITEMCHANGE (на случай старых попыток)
+          #    (это безопасно: просто вырежет блок, если он есть)
+          perl -0777 -i -pe 's/\n#ifndef NMTVITEMCHANGE.*?\n#endif\n\n/\
+/s' "$FILE"
+
+          # 2) Патчим место, где wx кастит lParam в NMTVITEMCHANGE и берёт info->hItem
+          #    Делаем fallback на NMTREEVIEW.
           perl -0777 -i -pe '
-            if ($ARGV =~ /treectrl\.cpp$/) {
-              s/(#include\s+"wx\/wxprec\.h"\s*\n)/$1\n#ifndef NMTVITEMCHANGE\ntypedef struct tagNMTVITEMCHANGE {\n    NMHDR     hdr;\n    UINT      uChanged;\n    HTREEITEM hItem;\n    LPARAM    lParam;\n} NMTVITEMCHANGE, *LPNMTVITEMCHANGE;\n#endif\n\n/s;
+            my $re = qr/NMTVITEMCHANGE\*\s+info\s*=\s*\(NMTVITEMCHANGE\*\)lParam\s*;\s*/s;
+            if (s/$re/\
+#ifdef NMTVITEMCHANGE\n\
+                    NMTVITEMCHANGE* info = (NMTVITEMCHANGE*)lParam;\n\
+                    HTREEITEM changedItem = info->hItem;\n\
+#else\n\
+                    NMTREEVIEW* tv = (NMTREEVIEW*)lParam;\n\
+                    HTREEITEM changedItem = tv->itemNew.hItem;\n\
+#endif\n\
+/s) {
+            } else {
+              die \"Patch failed: pattern not found (NMTVITEMCHANGE cast)\\n\";
             }
+
+            # теперь заменяем все дальнейшие info->hItem на changedItem (в пределах функции это ок)
+            s/info->hItem/changedItem/g;
           ' "$FILE"
 
-          # Покажем, что вставка реально произошла (кусок вокруг вставки)
-          grep -n "NMTVITEMCHANGE" -n "$FILE" | head -n 20
+          # Печать пары строк для контроля
+          grep -n "changedItem" "$FILE" | head -n 30
 
       - name: Build wxWidgets 2.8.12 (static unicode release) with log tail on failure
         shell: msys2 {0}
         run: |
           set -euo pipefail
-
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
           cd "$WXWIN/build/msw"
@@ -81,7 +96,7 @@ jobs:
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
-      - name: Build Td5MapEditor (auto-find .cbp)
+      - name: Build Td5MapEditor (parse .cbp)
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -91,10 +106,13 @@ jobs:
           from pathlib import Path
 
           root = Path(os.getcwd())
-          candidates = list(root.rglob("*.cbp"))
-          if not candidates:
-              raise SystemExit("No .cbp found anywhere in repo")
-          cbp = candidates[0]
+          cbp = root / "td5mapeditor.cbp"
+          if not cbp.exists():
+              # fallback: find any cbp
+              found = list(root.rglob("*.cbp"))
+              if not found:
+                  raise SystemExit("No .cbp found")
+              cbp = found[0]
           print("Using CBP:", cbp)
 
           wxwin = Path(os.environ["WXWIN"])
@@ -114,8 +132,7 @@ jobs:
 
           target = None
           for t in targets:
-              title = t.attrib.get("title", "")
-              if title.lower() == "release":
+              if t.attrib.get("title", "").lower() == "release":
                   target = t
                   break
           if target is None:
@@ -163,8 +180,6 @@ jobs:
 
           objects = []
           for src in sources:
-              if not src.exists():
-                  raise SystemExit(f"Missing source: {src}")
               obj = bdir / (src.stem + ".o")
               subprocess.check_call([cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags])
               objects.append(obj)
@@ -187,33 +202,17 @@ jobs:
               libflags.append(l if l.startswith("-l") else libflag(l))
 
           if not have_wx:
-              libflags += [
-                  "-lwxmsw28u_core",
-                  "-lwxmsw28u_adv",
-                  "-lwxmsw28u_html",
-                  "-lwxmsw28u_xrc",
-                  "-lwxbase28u",
-                  "-lwxbase28u_xml",
-                  "-lwxbase28u_net",
-              ]
+              libflags += ["-lwxmsw28u_core", "-lwxbase28u", "-lwxmsw28u_adv"]
 
           libflags += [f"-l{s}" for s in syslibs]
 
-          ldflags = [
-              "-Wl,--subsystem,windows",
-              "-static-libgcc", "-static-libstdc++",
-          ]
+          ldflags = ["-Wl,--subsystem,windows", "-static-libgcc", "-static-libstdc++"]
           libdirflags = [f"-L{d}" for d in lib_dirs if d]
 
           out_exe = bdir / "Td5MapEditor.exe"
-          cmd = [cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags]
-          print("Link cmd:", " ".join(cmd))
-          subprocess.check_call(cmd)
-
+          subprocess.check_call([cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags])
           print("Built:", out_exe)
           PY
-
-          ls -la build-win-x86
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
