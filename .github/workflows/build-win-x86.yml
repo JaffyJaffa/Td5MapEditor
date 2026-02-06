@@ -3,7 +3,9 @@ name: build-win-x86
 on:
   workflow_dispatch:
   push:
-    branches: [ "master", "main" ]
+    branches:
+      - master
+      - main
   pull_request:
 
 jobs:
@@ -19,14 +21,15 @@ jobs:
         with:
           msystem: MINGW32
           update: true
-          install: >-
-            mingw-w64-i686-toolchain
-            mingw-w64-i686-make
-            unzip
-            zip
-            git
-            python
-            curl
+          install:
+            - mingw-w64-i686-toolchain
+            - mingw-w64-i686-make
+            - unzip
+            - zip
+            - git
+            - python
+            - curl
+            - perl
 
       - name: Download wxWidgets 2.8.12 sources
         shell: msys2 {0}
@@ -37,83 +40,31 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
 
-      - name: Patch wxWidgets 2.8.12 treectrl.cpp to avoid NMTVITEMCHANGE on older headers
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          WXWIN="$PWD/deps/wxWidgets-2.8.12"
-          FILE="$WXWIN/src/msw/treectrl.cpp"
-
-          # 1) Уберём, если ты ранее добавлял свой typedef NMTVITEMCHANGE (на случай старых попыток)
-          #    (это безопасно: просто вырежет блок, если он есть)
-          perl -0777 -i -pe 's/\n#ifndef NMTVITEMCHANGE.*?\n#endif\n\n/\
-/s' "$FILE"
-
-          # 2) Патчим место, где wx кастит lParam в NMTVITEMCHANGE и берёт info->hItem
-          #    Делаем fallback на NMTREEVIEW.
-          perl -0777 -i -pe '
-            my $re = qr/NMTVITEMCHANGE\*\s+info\s*=\s*\(NMTVITEMCHANGE\*\)lParam\s*;\s*/s;
-            if (s/$re/\
-#ifdef NMTVITEMCHANGE\n\
-                    NMTVITEMCHANGE* info = (NMTVITEMCHANGE*)lParam;\n\
-                    HTREEITEM changedItem = info->hItem;\n\
-#else\n\
-                    NMTREEVIEW* tv = (NMTREEVIEW*)lParam;\n\
-                    HTREEITEM changedItem = tv->itemNew.hItem;\n\
-#endif\n\
-/s) {
-            } else {
-              die \"Patch failed: pattern not found (NMTVITEMCHANGE cast)\\n\";
-            }
-
-            # теперь заменяем все дальнейшие info->hItem на changedItem (в пределах функции это ок)
-            s/info->hItem/changedItem/g;
-          ' "$FILE"
-
-          # Печать пары строк для контроля
-          grep -n "changedItem" "$FILE" | head -n 30
-
-      - name: Build wxWidgets 2.8.12 (static unicode release) with log tail on failure
+      - name: Build wxWidgets 2.8.12 (static unicode release)
         shell: msys2 {0}
         run: |
           set -euo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
           cd "$WXWIN/build/msw"
-
-          export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition"
-          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers"
-
-          LOG="$PWD/wx-build.log"
-          echo "Building wxWidgets, log: $LOG"
-
-          (mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0) >"$LOG" 2>&1 || {
-            echo "wxWidgets build FAILED. Last 250 lines of log:"
-            tail -n 250 "$LOG" || true
-            exit 1
-          }
-
+          mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
-      - name: Build Td5MapEditor (parse .cbp)
+      - name: Build Td5MapEditor (auto-find.cbp)
         shell: msys2 {0}
         run: |
           set -euo pipefail
-
-          python - << 'PY'
+          python - <<'PY'
           import os, subprocess, xml.etree.ElementTree as ET
           from pathlib import Path
 
           root = Path(os.getcwd())
-          cbp = root / "td5mapeditor.cbp"
-          if not cbp.exists():
-              # fallback: find any cbp
-              found = list(root.rglob("*.cbp"))
-              if not found:
-                  raise SystemExit("No .cbp found")
-              cbp = found[0]
-          print("Using CBP:", cbp)
+          cbps = list(root.rglob("*.cbp"))
+          if not cbps:
+              raise SystemExit("No .cbp found")
+          cbp = next((p for p in cbps if p.name.lower() == "td5mapeditor.cbp"), cbps[0])
+          print("Using:", cbp)
 
           wxwin = Path(os.environ["WXWIN"])
           wx_cfg_inc = wxwin / "lib" / "gcc_lib" / "mswu"
@@ -128,24 +79,18 @@ jobs:
 
           targets = [t for t in proj.iter() if strip(t.tag) == "Target"]
           if not targets:
-              raise SystemExit("No <Target> found in .cbp")
+              raise SystemExit("No <Target> in .cbp")
 
-          target = None
-          for t in targets:
-              if t.attrib.get("title", "").lower() == "release":
-                  target = t
-                  break
-          if target is None:
-              target = targets[0]
+          target = next((t for t in targets if t.attrib.get("title","").lower()=="release"), targets[0])
 
           sources = []
           for u in proj.iter():
               if strip(u.tag) == "Unit":
-                  fn = u.attrib.get("filename", "")
-                  if fn.lower().endswith((".cpp", ".c", ".cc", ".cxx")):
-                      sources.append(root / fn)
+                  fn = u.attrib.get("filename","")
+                  if fn.lower().endswith((".cpp",".c",".cc",".cxx")):
+                      sources.append((root / fn).resolve())
           if not sources:
-              raise SystemExit("No source files found in <Unit> entries")
+              raise SystemExit("No sources in .cbp")
 
           include_dirs = set()
           lib_dirs = set()
@@ -167,50 +112,35 @@ jobs:
           include_dirs.update([str(wx_inc), str(wx_cfg_inc)])
           lib_dirs.add(str(wx_lib))
 
-          bdir = root / "build-win-x86"
+          bdir = (root / "build-win-x86").resolve()
           bdir.mkdir(exist_ok=True)
 
           cxx = "g++"
-          cxxflags = [
-              "-O2", "-pipe",
-              "-D__WXMSW__", "-DwxUSE_UNICODE=1",
-              "-static-libgcc", "-static-libstdc++",
-          ]
+          cxxflags = ["-O2","-pipe","-D__WXMSW__","-DwxUSE_UNICODE=1","-static-libgcc","-static-libstdc++"]
           incflags = [f"-I{d}" for d in include_dirs if d]
 
           objects = []
           for src in sources:
               obj = bdir / (src.stem + ".o")
               subprocess.check_call([cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags])
-              objects.append(obj)
+              objects.append(str(obj))
 
-          syslibs = [
-              "comctl32","comdlg32","gdi32","winspool","winmm",
-              "shell32","shlwapi","ole32","oleaut32","uuid","rpcrt4",
-              "advapi32","ws2_32"
-          ]
-
-          def libflag(name: str) -> str:
-              return f"-l{name}"
+          syslibs = ["comctl32","comdlg32","gdi32","winspool","winmm","shell32","shlwapi","ole32","oleaut32","uuid","rpcrt4","advapi32","ws2_32"]
 
           libflags = []
-          have_wx = any("wx" in l.lower() for l in libs)
+          if not any("wx" in l.lower() for l in libs):
+              libflags += ["-lwxmsw28u_core","-lwxbase28u","-lwxmsw28u_adv"]
           for l in libs:
               l = l.strip()
-              if not l:
-                  continue
-              libflags.append(l if l.startswith("-l") else libflag(l))
-
-          if not have_wx:
-              libflags += ["-lwxmsw28u_core", "-lwxbase28u", "-lwxmsw28u_adv"]
-
+              if l:
+                  libflags.append(l if l.startswith("-l") else f"-l{l}")
           libflags += [f"-l{s}" for s in syslibs]
 
-          ldflags = ["-Wl,--subsystem,windows", "-static-libgcc", "-static-libstdc++"]
           libdirflags = [f"-L{d}" for d in lib_dirs if d]
+          ldflags = ["-Wl,--subsystem,windows","-static-libgcc","-static-libstdc++"]
 
           out_exe = bdir / "Td5MapEditor.exe"
-          subprocess.check_call([cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags])
+          subprocess.check_call([cxx, "-o", str(out_exe), *objects, *libdirflags, *libflags, *ldflags])
           print("Built:", out_exe)
           PY
 
