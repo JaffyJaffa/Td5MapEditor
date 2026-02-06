@@ -27,6 +27,7 @@ jobs:
             git
             python
             curl
+            patch
 
       - name: Download wxWidgets 2.8.12 sources
         shell: msys2 {0}
@@ -37,24 +38,24 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
 
-      - name: Create wx compat header
+      - name: Patch wxWidgets 2.8.12 treectrl.cpp for MinGW headers
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          cat > deps/wx-compat.h <<'EOF'
-          #pragma once
-          #include <windows.h>
-          #include <commctrl.h>
+          WXWIN="$PWD/deps/wxWidgets-2.8.12"
+          FILE="$WXWIN/src/msw/treectrl.cpp"
 
-          #ifndef NMTVITEMCHANGE
-          typedef struct tagNMTVITEMCHANGE {
-              NMHDR     hdr;
-              UINT      uChanged;
-              HTREEITEM hItem;
-              LPARAM    lParam;
-          } NMTVITEMCHANGE, *LPNMTVITEMCHANGE;
-          #endif
-          EOF
+          # Вставляем fallback typedef ТОЛЬКО если NMTVITEMCHANGE отсутствует.
+          # Никаких include windows.h/commctrl.h тут не делаем — они уже подключены wx корректно.
+          # Ищем место после #include "wx/wxprec.h" (оно есть почти всегда).
+          perl -0777 -i -pe '
+            if ($ARGV =~ /treectrl\.cpp$/) {
+              s/(#include\s+"wx\/wxprec\.h"\s*\n)/$1\n#ifndef NMTVITEMCHANGE\ntypedef struct tagNMTVITEMCHANGE {\n    NMHDR     hdr;\n    UINT      uChanged;\n    HTREEITEM hItem;\n    LPARAM    lParam;\n} NMTVITEMCHANGE, *LPNMTVITEMCHANGE;\n#endif\n\n/s;
+            }
+          ' "$FILE"
+
+          # Покажем, что вставка реально произошла (кусок вокруг вставки)
+          grep -n "NMTVITEMCHANGE" -n "$FILE" | head -n 20
 
       - name: Build wxWidgets 2.8.12 (static unicode release) with log tail on failure
         shell: msys2 {0}
@@ -66,7 +67,7 @@ jobs:
           cd "$WXWIN/build/msw"
 
           export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition"
-          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers -include \"$GITHUB_WORKSPACE/deps/wx-compat.h\""
+          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers"
 
           LOG="$PWD/wx-build.log"
           echo "Building wxWidgets, log: $LOG"
@@ -90,7 +91,6 @@ jobs:
           from pathlib import Path
 
           root = Path(os.getcwd())
-
           candidates = list(root.rglob("*.cbp"))
           if not candidates:
               raise SystemExit("No .cbp found anywhere in repo")
