@@ -45,14 +45,18 @@ jobs:
           set -euxo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
 
-          # FIX: makefile.gcc генерит/копирует setup.h в lib/gcc_lib/mswu/wx
-          # и падает, если папки не существуют.
+          # makefile.gcc генерит/копирует setup.h в lib/gcc_lib/mswu/wx и падает,
+          # если папки нет.
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
 
           cd "$WXWIN/build/msw"
-          mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
 
-          # Небольшая проверка, что setup.h реально появился
+          # wx 2.8 + современный GCC: отключаем narrowing и прочую "строгость"
+          mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 \
+            CFLAGS="-O2 -pipe -Wno-error" \
+            CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive"
+
+          # Проверка, что setup.h появился
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           ls -la "$WXWIN/lib/gcc_lib/mswu/wx/"
 
@@ -64,7 +68,7 @@ jobs:
           set -euxo pipefail
 
           python - << 'PY'
-          import os, sys, subprocess, xml.etree.ElementTree as ET
+          import os, subprocess, xml.etree.ElementTree as ET
           from pathlib import Path
 
           root = Path(os.getcwd())
@@ -89,18 +93,19 @@ jobs:
 
           target = None
           for t in targets:
-            title = t.attrib.get("title","")
+            title = t.attrib.get("title", "")
             if title.lower() == "release":
               target = t
               break
           if target is None:
             target = targets[0]
 
+          # Source files from Units
           sources = []
           for u in proj.iter():
             if strip(u.tag) == "Unit":
-              fn = u.attrib.get("filename","")
-              if fn.lower().endswith((".cpp",".c",".cc",".cxx")):
+              fn = u.attrib.get("filename", "")
+              if fn.lower().endswith((".cpp", ".c", ".cc", ".cxx")):
                 sources.append(root / fn)
           if not sources:
             raise SystemExit("No source files found in <Unit> entries")
@@ -109,80 +114,11 @@ jobs:
           lib_dirs = set()
           libs = []
 
+          # Extract include/lib dirs and libs from target
           for comp in target.iter():
             if strip(comp.tag) == "Compiler":
               for a in comp:
                 if strip(a.tag) == "Add" and "directory" in a.attrib:
                   include_dirs.add(a.attrib["directory"])
             if strip(comp.tag) == "Linker":
-              for a in comp:
-                if strip(a.tag) == "Add":
-                  if "directory" in a.attrib:
-                    lib_dirs.add(a.attrib["directory"])
-                  if "library" in a.attrib:
-                    libs.append(a.attrib["library"])
-
-          include_dirs.update([str(wx_inc), str(wx_cfg_inc)])
-          lib_dirs.add(str(wx_lib))
-
-          bdir = root / "build-win-x86"
-          bdir.mkdir(exist_ok=True)
-
-          cxx = "g++"
-          cxxflags = [
-            "-O2", "-pipe",
-            "-D__WXMSW__", "-DwxUSE_UNICODE=1",
-            "-static-libgcc", "-static-libstdc++",
-          ]
-          incflags = [f"-I{d}" for d in include_dirs if d]
-
-          objects = []
-          for src in sources:
-            if not src.exists():
-              raise SystemExit(f"Missing source: {src}")
-            obj = bdir / (src.stem + ".o")
-            cmd = [cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags]
-            subprocess.check_call(cmd)
-            objects.append(obj)
-
-          syslibs = ["comctl32", "comdlg32", "gdi32", "winspool", "winmm",
-                     "shell32", "shlwapi", "ole32", "oleaut32", "uuid", "rpcrt4",
-                     "advapi32", "ws2_32"]
-
-          def libflag(name: str) -> str:
-            return f"-l{name}"
-
-          libflags = []
-          have_wx = any("wx" in l.lower() for l in libs)
-          for l in libs:
-            l = l.strip()
-            if not l:
-              continue
-            if l.startswith("-l"):
-              libflags.append(l)
-            else:
-              libflags.append(libflag(l))
-
-          if not have_wx:
-            libflags += [ "-lwxmsw28u_core", "-lwxbase28u", "-lwxmsw28u_adv" ]
-
-          libflags += [f"-l{s}" for s in syslibs]
-
-          ldflags = [
-            "-Wl,--subsystem,windows",
-            "-static-libgcc", "-static-libstdc++",
-          ]
-          libdirflags = [f"-L{d}" for d in lib_dirs if d]
-
-          out_exe = bdir / "Td5MapEditor.exe"
-          link_cmd = [cxx, "-o", str(out_exe), *map(str, objects), *libdirflags, *libflags, *ldflags]
-          subprocess.check_call(link_cmd)
-
-          print("Built:", out_exe)
-          PY
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Td5MapEditor-win-x86
-          path: build-win-x86/Td5MapEditor.exe
+              for a in
