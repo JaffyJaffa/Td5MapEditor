@@ -39,7 +39,21 @@ jobs:
           cd deps
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
+          
+      - name: Patch wxWidgets 2.8.12 for modern MinGW
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          WXWIN="$PWD/deps/wxWidgets-2.8.12"
+          f="$WXWIN/src/msw/utilsexc.cpp"
 
+          # Replace "case -1:" with "case WAIT_FAILED:" (or 0xFFFFFFFF) to avoid narrowing error
+          # Some headers may not expose WAIT_FAILED depending on defines; 0xFFFFFFFF is always safe for DWORD.
+          sed -i 's/^[[:space:]]*case[[:space:]]\+-1[[:space:]]*:/            case 0xFFFFFFFF:/' "$f"
+
+          # show the patched lines for debug
+          grep -n "case 0xFFFFFFFF" "$f" || true
+          
       - name: Build wxWidgets 2.8.12 (static unicode release)
         shell: msys2 {0}
         run: |
