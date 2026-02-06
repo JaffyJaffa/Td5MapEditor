@@ -21,15 +21,15 @@ jobs:
         with:
           msystem: MINGW32
           update: true
-          install:
-            - mingw-w64-i686-toolchain
-            - mingw-w64-i686-make
-            - unzip
-            - zip
-            - git
-            - python
-            - curl
-            - perl
+          install: >-
+            mingw-w64-i686-toolchain
+            mingw-w64-i686-make
+            unzip
+            zip
+            git
+            python
+            curl
+            perl
 
       - name: Download wxWidgets 2.8.12 sources
         shell: msys2 {0}
