@@ -46,13 +46,14 @@ jobs:
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
           cd "$WXWIN/build/msw"
 
-          export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition"
-          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers"
+          # Force-disable HAVE_W32API_H which triggers missing NMTVITEMCHANGE
+          export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition -UHAVE_W32API_H -DNO_W32API_H -DHAVE_W32API_H=0"
+          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers -UHAVE_W32API_H -DNO_W32API_H -DHAVE_W32API_H=0"
 
           LOG="$PWD/wx-build.log"
           echo "Building wxWidgets, log: $LOG"
 
-          (mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 HAVE_W32API_H=0) >"$LOG" 2>&1 || {
+          (mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0) >"$LOG" 2>&1 || {
             echo "wxWidgets build FAILED. Last 250 lines of log:"
             tail -n 250 "$LOG" || true
             exit 1
