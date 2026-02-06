@@ -37,6 +37,25 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
 
+      - name: Create wx compat header
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cat > deps/wx-compat.h <<'EOF'
+          #pragma once
+          #include <windows.h>
+          #include <commctrl.h>
+
+          #ifndef NMTVITEMCHANGE
+          typedef struct tagNMTVITEMCHANGE {
+              NMHDR     hdr;
+              UINT      uChanged;
+              HTREEITEM hItem;
+              LPARAM    lParam;
+          } NMTVITEMCHANGE, *LPNMTVITEMCHANGE;
+          #endif
+          EOF
+
       - name: Build wxWidgets 2.8.12 (static unicode release) with log tail on failure
         shell: msys2 {0}
         run: |
@@ -46,9 +65,8 @@ jobs:
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
           cd "$WXWIN/build/msw"
 
-          # Force-disable HAVE_W32API_H which triggers missing NMTVITEMCHANGE
-          export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition -UHAVE_W32API_H -DNO_W32API_H -DHAVE_W32API_H=0"
-          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers -UHAVE_W32API_H -DNO_W32API_H -DHAVE_W32API_H=0"
+          export CFLAGS="-O2 -pipe -Wno-error -Wno-old-style-definition"
+          export CXXFLAGS="-O2 -pipe -Wno-error -Wno-narrowing -fpermissive -Wno-unused-local-typedefs -Wno-implicit-fallthrough -Wno-deprecated-copy -Wno-ignored-qualifiers -include \"$GITHUB_WORKSPACE/deps/wx-compat.h\""
 
           LOG="$PWD/wx-build.log"
           echo "Building wxWidgets, log: $LOG"
