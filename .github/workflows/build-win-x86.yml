@@ -39,6 +39,30 @@ jobs:
           cd deps
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
+
+      - name: Create wx-compat.h
+      
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p deps
+          cat > deps/wx-compat.h <<'EOF'
+           #pragma once
+           #include <windows.h>
+           #include <commctrl.h>
+
+           #ifndef NMTVITEMCHANGE
+               typedef struct tagNMTVITEMCHANGE {
+             NMHDR     hdr;
+             UINT      uChanged;
+             HTREEITEM hItem;
+             LPARAM    lParam;
+             UINT      uStateNew;
+             UINT      uStateOld;
+           } NMTVITEMCHANGE, *LPNMTVITEMCHANGE;
+          #endif
+          EOF
+     
           
       - name: Patch wxWidgets 2.8.12 for modern MinGW
         shell: msys2 {0}
@@ -58,7 +82,7 @@ jobs:
              cd "$WXWIN/build/msw"
 
             mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 \
-            CPPFLAGS="-DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0501 -D_WIN32_IE=0x0600 -include \"$GITHUB_WORKSPACE/workflows/deps/wx-compat.h\""
+            CPPFLAGS="-DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0501 -D_WIN32_IE=0x0600 -include \"$GITHUB_WORKSPACE/deps/wx-compat.h\""
 
             test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
             echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
