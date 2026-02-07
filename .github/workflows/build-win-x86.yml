@@ -1,11 +1,9 @@
-name: build-win-x86
+name: build-win-x86-ansi
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - main
+    branches: [ "master", "main" ]
   pull_request:
 
 jobs:
@@ -31,7 +29,7 @@ jobs:
             curl
             perl
 
-      - name: Download wxWidgets 2.8.12 sources
+      - name: Download wxWidgets 2.8.12
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -40,114 +38,31 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
 
-      - name: Create wx-compat.h
-      
+      - name: Patch narrowing error (utilsexc.cpp)
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          mkdir -p deps
-          cat > deps/wx-compat.h <<'EOF'
-           #pragma once
-           #include <windows.h>
-           #include <commctrl.h>
+          f="deps/wxWidgets-2.8.12/src/msw/utilsexc.cpp"
+          sed -i 's/case -1:/case 0xFFFFFFFF:/' "$f"
 
-           #ifndef NMTVITEMCHANGE
-               typedef struct tagNMTVITEMCHANGE {
-             NMHDR     hdr;
-             UINT      uChanged;
-             HTREEITEM hItem;
-             LPARAM    lParam;
-             UINT      uStateNew;
-             UINT      uStateOld;
-           } NMTVITEMCHANGE, *LPNMTVITEMCHANGE;
-          #endif
-          EOF
-     
-          
-      - name: Patch wxWidgets 2.8.12 for modern MinGW
+      - name: Build wxWidgets ANSI
         shell: msys2 {0}
         run: |
           set -euo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
-          f="$WXWIN/src/msw/utilsexc.cpp"
+          mkdir -p "$WXWIN/lib/gcc_lib/msw"
+          cd "$WXWIN/build/msw"
 
-          # Исправление ошибки сужения (narrowing error) для современных компиляторов
-          sed -i 's/^[[:space:]]*case[[:space:]]\+-1[[:space:]]*:/            case 0xFFFFFFFF:/' "$f"
+          mingw32-make -j2 -f makefile.gcc \
+            BUILD=release \
+            SHARED=0 \
+            UNICODE=0 \
+            MONOLITHIC=0 \
+            CPPFLAGS="-D_WIN32_WINNT=0x0501 -D_WIN32_IE=0x0600"
 
+          echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
-      - name: Patch wxWidgets 2.8.12 (tif_win32.c force ANSI)
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          f="deps/wxWidgets-2.8.12/src/tiff/tif_win32.c"
-
-          # 1) Вставляем ANSI-изоляцию в начало файла (после первых include/комментариев не важно — главное до windows.h использования)
-          # Вставим самым верхом.
-            perl -0777 -i -pe '
-          if ($_ !~ /WX_TIFF_WIN32_FORCE_ANSI/s) {
-          $_ = "/* WX_TIFF_WIN32_FORCE_ANSI */\n".
-             "#ifdef UNICODE\n#undef UNICODE\n#endif\n".
-             "#ifdef _UNICODE\n#undef _UNICODE\n#endif\n".
-             "#define WIN32_LEAN_AND_MEAN\n".
-             "/* end WX_TIFF_WIN32_FORCE_ANSI */\n\n" . $_;
-          }
-          ' "$f"
-
-          # 2) Приводим типы/функции к ANSI-версии
-          perl -0777 -i -pe '
-          s/\bLPCTSTR\b/const char*/g;
-          s/\bLPTSTR\b/char*/g;
-          s/\bTCHAR\b/char/g;
-
-          s/\bwsprintf\(/wsprintfA(/g;
-          s/\blstrlen\(/lstrlenA(/g;
-          s/\bwvsprintf\(/wvsprintfA(/g;
-
-          s/\bMessageBox\(/MessageBoxA(/g;
-          s/\bFormatMessage\(/FormatMessageA(/g;
-          s/\bGetModuleHandle\(/GetModuleHandleA(/g;
-          s/\bGetModuleFileName\(/GetModuleFileNameA(/g;
-          ' "$f"
-
-          
-      - name: Patch wxWidgets 2.8.12 (tif_win32.c: force WinAPI A)
-        shell: msys2 {0}
-        run: |    
-           set -euo pipefail
-           f="deps/wxWidgets-2.8.12/src/tiff/tif_win32.c"
-
-           perl -0777 -i -pe '
-                 s/\bCreateFile\s*\(/CreateFileA(/g;
-            s/\bGetFileAttributes\s*\(/GetFileAttributesA(/g;
-            s/\bSetFileAttributes\s*\(/SetFileAttributesA(/g;
-            s/\bDeleteFile\s*\(/DeleteFileA(/g;
-            s/\bMoveFile\s*\(/MoveFileA(/g;
-            s/\bCopyFile\s*\(/CopyFileA(/g;
-
-            s/\bFormatMessage\s*\(/FormatMessageA(/g;
-            s/\bGetModuleFileName\s*\(/GetModuleFileNameA(/g;
-            s/\bGetModuleHandle\s*\(/GetModuleHandleA(/g;
-
-            s/\bMessageBox\s*\(/MessageBoxA(/g;
-            s/\bwsprintf\s*\(/wsprintfA(/g;
-            s/\bwvsprintf\s*\(/wvsprintfA(/g;
-            s/\blstrlen\s*\(/lstrlenA(/g;
-             ' "$f"
-          
-      - name: Build wxWidgets 2.8.12 (static unicode release)
-        shell: msys2 {0}
-        run: |
-            set -euo pipefail
-            WXWIN="$PWD/deps/wxWidgets-2.8.12"
-             cd "$WXWIN/build/msw"
-
-            mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 \
-            CPPFLAGS="-DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0501 -D_WIN32_IE=0x0600 -include \"$GITHUB_WORKSPACE/deps/wx-compat.h\""
-
-            test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
-            echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
-
-      - name: Build Td5MapEditor (auto-find.cbp)
+      - name: Build Td5MapEditor
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -156,89 +71,71 @@ jobs:
           from pathlib import Path
 
           root = Path(os.getcwd())
-          cbps = list(root.rglob("*.cbp"))
-          if not cbps:
-              raise SystemExit("No .cbp found")
-          cbp = next((p for p in cbps if p.name.lower() == "td5mapeditor.cbp"), cbps[0])
-          print(f"Using: {cbp}")
+          cbp = next(root.rglob("*.cbp"))
+          print("Using project:", cbp)
 
           wxwin = Path(os.environ["WXWIN"])
-          wx_cfg_inc = wxwin / "lib" / "gcc_lib" / "mswu"
           wx_inc = wxwin / "include"
+          wx_cfg_inc = wxwin / "lib" / "gcc_lib" / "msw"
           wx_lib = wxwin / "lib" / "gcc_lib"
 
           tree = ET.parse(cbp)
           proj = tree.getroot()
 
-          def strip(tag: str) -> str:
-              return tag.split("}", 1)[-1]
+          def strip(tag):
+              return tag.split("}",1)[-1]
 
-          targets = [t for t in proj.iter() if strip(t.tag) == "Target"]
-          target = next((t for t in targets if t.attrib.get("title","").lower()=="release"), targets[0])
-
-          sources = []
+          sources=[]
           for u in proj.iter():
-              if strip(u.tag) == "Unit":
-                  fn = u.attrib.get("filename","")
-                  if fn.lower().endswith((".cpp",".c",".cc",".cxx")):
-                      sources.append((root / fn).resolve())
+              if strip(u.tag)=="Unit":
+                  fn=u.attrib.get("filename","")
+                  if fn.lower().endswith((".cpp",".c")):
+                      sources.append((root/fn).resolve())
 
-          include_dirs = set()
-          lib_dirs = set()
-          libs = []
+          builddir=root/"build"
+          builddir.mkdir(exist_ok=True)
 
-          for comp in target.iter():
-              if strip(comp.tag) == "Compiler":
-                  for a in comp:
-                      if strip(a.tag) == "Add" and "directory" in a.attrib:
-                          include_dirs.add(a.attrib["directory"])
-              if strip(comp.tag) == "Linker":
-                  for a in comp:
-                      if strip(a.tag) == "Add":
-                          if "directory" in a.attrib:
-                              lib_dirs.add(a.attrib["directory"])
-                          if "library" in a.attrib:
-                              libs.append(a.attrib["library"])
+          cxx="g++"
+          flags=[
+              "-O2",
+              "-pipe",
+              "-D__WXMSW__",
+              "-D_WIN32_WINNT=0x0501",
+              "-static-libgcc",
+              "-static-libstdc++"
+          ]
 
-          include_dirs.update([str(wx_inc), str(wx_cfg_inc)])
-          lib_dirs.add(str(wx_lib))
+          incflags=[f"-I{wx_inc}", f"-I{wx_cfg_inc}"]
 
-          bdir = (root / "build-win-x86").resolve()
-          bdir.mkdir(exist_ok=True)
-
-          cxx = "g++"
-          # Добавлен флаг -D_WIN32_WINNT=0x0501 для совместимости с wxWidgets
-          cxxflags = ["-O2", "-pipe", "-D__WXMSW__", "-DwxUSE_UNICODE=1", "-D_WIN32_WINNT=0x0501", "-static-libgcc", "-static-libstdc++"]
-          incflags = [f"-I{d}" for d in include_dirs if d]
-
-          objects = []
+          objects=[]
           for src in sources:
-              obj = bdir / (src.stem + ".o")
-              print(f"Compiling: {src.name}")
-              subprocess.check_call([cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags])
+              obj=builddir/(src.stem+".o")
+              subprocess.check_call([cxx,"-c",str(src),"-o",str(obj),*flags,*incflags])
               objects.append(str(obj))
 
-          syslibs = ["comctl32","comdlg32","gdi32","winspool","winmm","shell32","shlwapi","ole32","oleaut32","uuid","rpcrt4","advapi32","ws2_32"]
+          libs=[
+              "-lwxmsw28_core",
+              "-lwxbase28",
+              "-lwxmsw28_adv",
+              "-lcomctl32","-lcomdlg32","-lgdi32","-lwinspool",
+              "-lwinmm","-lshell32","-lole32","-loleaut32",
+              "-luuid","-ladvapi32","-lws2_32"
+          ]
 
-          libflags = []
-          if not any("wx" in l.lower() for l in libs):
-              libflags += ["-lwxmsw28u_core","-lwxbase28u","-lwxmsw28u_adv"]
-          for l in libs:
-              l = l.strip()
-              if l:
-                  libflags.append(l if l.startswith("-l") else f"-l{l}")
-          libflags += [f"-l{s}" for s in syslibs]
+          exe=builddir/"Td5MapEditor.exe"
+          subprocess.check_call([
+              cxx,"-o",str(exe),
+              *objects,
+              f"-L{wx_lib}",
+              *libs,
+              "-Wl,--subsystem,windows"
+          ])
 
-          libdirflags = [f"-L{d}" for d in lib_dirs if d]
-          ldflags = ["-Wl,--subsystem,windows","-static-libgcc","-static-libstdc++"]
-
-          out_exe = bdir / "Td5MapEditor.exe"
-          subprocess.check_call([cxx, "-o", str(out_exe), *objects, *libdirflags, *libflags, *ldflags])
-          print(f"Built successfully: {out_exe}")
+          print("Built:",exe)
           PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Td5MapEditor-win-x86
-          path: build-win-x86/Td5MapEditor.exe
+          name: Td5MapEditor-winXP-ansi
+          path: build/Td5MapEditor.exe
