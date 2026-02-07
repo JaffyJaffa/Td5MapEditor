@@ -108,6 +108,31 @@ jobs:
           s/\bGetModuleHandle\(/GetModuleHandleA(/g;
           s/\bGetModuleFileName\(/GetModuleFileNameA(/g;
           ' "$f"
+
+          - name: Patch wxWidgets 2.8.12 (tif_win32.c: force WinAPI A)
+            shell: msys2 {0}
+            run: |
+              
+          set -euo pipefail
+          f="deps/wxWidgets-2.8.12/src/tiff/tif_win32.c"
+
+          perl -0777 -i -pe '
+            s/\bCreateFile\s*\(/CreateFileA(/g;
+            s/\bGetFileAttributes\s*\(/GetFileAttributesA(/g;
+            s/\bSetFileAttributes\s*\(/SetFileAttributesA(/g;
+            s/\bDeleteFile\s*\(/DeleteFileA(/g;
+            s/\bMoveFile\s*\(/MoveFileA(/g;
+            s/\bCopyFile\s*\(/CopyFileA(/g;
+
+            s/\bFormatMessage\s*\(/FormatMessageA(/g;
+            s/\bGetModuleFileName\s*\(/GetModuleFileNameA(/g;
+            s/\bGetModuleHandle\s*\(/GetModuleHandleA(/g;
+
+            s/\bMessageBox\s*\(/MessageBoxA(/g;
+            s/\bwsprintf\s*\(/wsprintfA(/g;
+            s/\bwvsprintf\s*\(/wvsprintfA(/g;
+            s/\blstrlen\s*\(/lstrlenA(/g;
+          ' "$f"
           
       - name: Build wxWidgets 2.8.12 (static unicode release)
         shell: msys2 {0}
