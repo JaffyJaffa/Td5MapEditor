@@ -1,9 +1,9 @@
-name: build-win-x86-ansi
+name: build-xp-ansi
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "master", "main" ]
+    branches: [ master, main ]
   pull_request:
 
 jobs:
@@ -24,12 +24,11 @@ jobs:
             mingw-w64-i686-make
             unzip
             zip
-            git
             python
             curl
             perl
 
-      - name: Download wxWidgets 2.8.12
+      - name: Download wxWidgets 2.8.12 sources
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -38,41 +37,59 @@ jobs:
           curl -L -o wxWidgets-2.8.12.zip "https://downloads.sourceforge.net/project/wxwindows/2.8.12/wxWidgets-2.8.12.zip"
           unzip -q wxWidgets-2.8.12.zip
 
-      - name: Patch narrowing error (utilsexc.cpp)
+      # 1) XP target: убираем Vista+ ветку (TVN_ITEMCHANGED / NMTVITEMCHANGE) из treectrl.cpp
+      - name: Patch wxWidgets 2.8.12 (disable TVN_ITEMCHANGED on XP)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          f="deps/wxWidgets-2.8.12/src/msw/treectrl.cpp"
+          # В wx 2.8 эта ветка обычно под #ifdef TVN_ITEMCHANGED
+          # Меняем на более жёсткую проверку: только если реально определён NMTVITEMCHANGE
+          perl -i -pe 's/^\s*#\s*ifdef\s+TVN_ITEMCHANGED\s*$/#if defined(TVN_ITEMCHANGED) \&\& defined(NMTVITEMCHANGE)/' "$f" || true
+
+      # 2) Современный GCC ругается на case -1 (narrowing) в utilsexc.cpp
+      - name: Patch wxWidgets 2.8.12 (utilsexc.cpp: WAIT_FAILED)
         shell: msys2 {0}
         run: |
           set -euo pipefail
           f="deps/wxWidgets-2.8.12/src/msw/utilsexc.cpp"
-          sed -i 's/case -1:/case 0xFFFFFFFF:/' "$f"
+          # Заменяем "case -1:" на "case WAIT_FAILED:"
+          perl -i -pe 's/^\s*case\s+-1\s*:\s*$/            case WAIT_FAILED:/' "$f" || true
 
-      - name: Build wxWidgets ANSI
+      - name: Build wxWidgets 2.8.12 (MONOLITHIC, ANSI, static, XP target)
         shell: msys2 {0}
         run: |
           set -euo pipefail
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
-          mkdir -p "$WXWIN/lib/gcc_lib/msw"
+          mkdir -p "$WXWIN/lib/gcc_lib/msw/wx"
           cd "$WXWIN/build/msw"
 
-          mingw32-make -j2 -f makefile.gcc \
-            BUILD=release \
-            SHARED=0 \
-            UNICODE=0 \
-            MONOLITHIC=0 \
-            CPPFLAGS="-D_WIN32_WINNT=0x0501 -D_WIN32_IE=0x0600"
+          # ANSI + таргет WinXP
+          export CPPFLAGS="-D_WIN32_WINNT=0x0501 -D_WIN32_IE=0x0600"
+          export CFLAGS="-O2 -pipe"
+          export CXXFLAGS="-O2 -pipe -fpermissive -Wno-narrowing -Wno-error"
 
+          # MONOLITHIC=1 даёт один wxmsw28*.a
+          mingw32-make -j2 -f makefile.gcc BUILD=release SHARED=0 UNICODE=0 MONOLITHIC=1
+
+          test -f "$WXWIN/lib/gcc_lib/msw/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
-      - name: Build Td5MapEditor
+      - name: Build Td5MapEditor from .cbp (auto-find)
         shell: msys2 {0}
         run: |
           set -euo pipefail
+
           python - <<'PY'
           import os, subprocess, xml.etree.ElementTree as ET
           from pathlib import Path
 
-          root = Path(os.getcwd())
-          cbp = next(root.rglob("*.cbp"))
-          print("Using project:", cbp)
+          root = Path.cwd()
+          cbps = list(root.rglob("*.cbp"))
+          if not cbps:
+              raise SystemExit("No .cbp found in repo")
+          cbp = next((p for p in cbps if p.name.lower() == "td5mapeditor.cbp"), cbps[0])
+          print("Using:", cbp)
 
           wxwin = Path(os.environ["WXWIN"])
           wx_inc = wxwin / "include"
@@ -82,60 +99,61 @@ jobs:
           tree = ET.parse(cbp)
           proj = tree.getroot()
 
-          def strip(tag):
-              return tag.split("}",1)[-1]
+          def strip(tag: str) -> str:
+              return tag.split("}", 1)[-1]
 
-          sources=[]
+          # Собираем исходники из Unit
+          sources = []
           for u in proj.iter():
-              if strip(u.tag)=="Unit":
-                  fn=u.attrib.get("filename","")
-                  if fn.lower().endswith((".cpp",".c")):
-                      sources.append((root/fn).resolve())
+              if strip(u.tag) == "Unit":
+                  fn = u.attrib.get("filename", "")
+                  if fn.lower().endswith((".cpp", ".c", ".cc", ".cxx")):
+                      sources.append((root / fn).resolve())
+          if not sources:
+              raise SystemExit("No source Units found in .cbp")
 
-          builddir=root/"build"
-          builddir.mkdir(exist_ok=True)
+          # Выход
+          bdir = (root / "build-xp-ansi").resolve()
+          bdir.mkdir(exist_ok=True)
 
-          cxx="g++"
-          flags=[
-              "-O2",
-              "-pipe",
-              "-D__WXMSW__",
-              "-D_WIN32_WINNT=0x0501",
-              "-static-libgcc",
-              "-static-libstdc++"
+          cxx = "g++"
+          # ANSI + XP + GUI
+          cxxflags = [
+              "-O2", "-pipe",
+              "-D__WXMSW__", "-DwxUSE_UNICODE=0",
+              "-D_WIN32_WINNT=0x0501", "-D_WIN32_IE=0x0600",
+              "-static-libgcc", "-static-libstdc++",
           ]
+          incflags = [f"-I{wx_inc}", f"-I{wx_cfg_inc}"]
 
-          incflags=[f"-I{wx_inc}", f"-I{wx_cfg_inc}"]
-
-          objects=[]
+          objects = []
           for src in sources:
-              obj=builddir/(src.stem+".o")
-              subprocess.check_call([cxx,"-c",str(src),"-o",str(obj),*flags,*incflags])
+              obj = bdir / (src.stem + ".o")
+              print("Compiling:", src)
+              subprocess.check_call([cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags])
               objects.append(str(obj))
 
-          libs=[
-              "-lwxmsw28_core",
-              "-lwxbase28",
-              "-lwxmsw28_adv",
-              "-lcomctl32","-lcomdlg32","-lgdi32","-lwinspool",
-              "-lwinmm","-lshell32","-lole32","-loleaut32",
-              "-luuid","-ladvapi32","-lws2_32"
+          # wxWidgets MONOLITHIC ANSI обычно: -lwxmsw28 (иногда -lwxmsw28_main отдельно не нужен при g++)
+          libdirflags = [f"-L{wx_lib}"]
+
+          # системные либы
+          syslibs = [
+              "comctl32","comdlg32","gdi32","winspool","winmm","shell32","shlwapi",
+              "ole32","oleaut32","uuid","rpcrt4","advapi32","ws2_32"
           ]
 
-          exe=builddir/"Td5MapEditor.exe"
-          subprocess.check_call([
-              cxx,"-o",str(exe),
-              *objects,
-              f"-L{wx_lib}",
-              *libs,
-              "-Wl,--subsystem,windows"
-          ])
+          libflags = ["-lwxmsw28"] + [f"-l{s}" for s in syslibs]
 
-          print("Built:",exe)
+          # ВАЖНО: subsystem 5.01 для XP
+          ldflags = ["-Wl,--subsystem,windows,5.01", "-static-libgcc", "-static-libstdc++"]
+
+          out_exe = bdir / "Td5MapEditor.exe"
+          subprocess.check_call([cxx, "-o", str(out_exe), *objects, *libdirflags, *libflags, *ldflags])
+          print("Built:", out_exe)
           PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Td5MapEditor-winXP-ansi
-          path: build/Td5MapEditor.exe
+          name: Td5MapEditor-xp-ansi
+          path: build-xp-ansi/Td5MapEditor.exe
