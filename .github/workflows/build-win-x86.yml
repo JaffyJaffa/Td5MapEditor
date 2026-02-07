@@ -57,7 +57,7 @@ jobs:
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
           cd "$WXWIN/build/msw"
-          # Ключевое исправление: CPPFLAGS="-D_WIN32_WINNT=0x0501" убирает ошибку NMTVITEMCHANGE
+          # Ключевое исправление: CPPFLAGS="-D_WIN32_WINNT=0x0600" убирает ошибку NMTVITEMCHANGE
           mingw32-make -j2 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 CPPFLAGS="-D_WIN32_WINNT=0x0501"
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
