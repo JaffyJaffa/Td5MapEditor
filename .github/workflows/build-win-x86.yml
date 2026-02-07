@@ -75,25 +75,39 @@ jobs:
           sed -i 's/^[[:space:]]*case[[:space:]]\+-1[[:space:]]*:/            case 0xFFFFFFFF:/' "$f"
 
 
-      - name: Patch wxWidgets 2.8.12 (tif_win32.c ANSI fix)
+      - name: Patch wxWidgets 2.8.12 (tif_win32.c force ANSI)
         shell: msys2 {0}
         run: |
           set -euo pipefail
           f="deps/wxWidgets-2.8.12/src/tiff/tif_win32.c"
 
-          # Перевод Win32ErrorHandler на ANSI-типы/функции, чтобы не конфликтовать с UNICODE сборкой
-           perl -0777 -i -pe '
-           s/\bLPCTSTR\b/const char*/g;
-           s/\bLPTSTR\b/char*/g;
-           s/\bTCHAR\b/char/g;
+          # 1) Вставляем ANSI-изоляцию в начало файла (после первых include/комментариев не важно — главное до windows.h использования)
+          # Вставим самым верхом.
+            perl -0777 -i -pe '
+          if ($_ !~ /WX_TIFF_WIN32_FORCE_ANSI/s) {
+          $_ = "/* WX_TIFF_WIN32_FORCE_ANSI */\n".
+             "#ifdef UNICODE\n#undef UNICODE\n#endif\n".
+             "#ifdef _UNICODE\n#undef _UNICODE\n#endif\n".
+             "#define WIN32_LEAN_AND_MEAN\n".
+             "/* end WX_TIFF_WIN32_FORCE_ANSI */\n\n" . $_;
+          }
+          ' "$f"
 
-           s/\blstrlen\(/lstrlenA(/g;
-           s/\bwvsprintf\(/wvsprintfA(/g;
-           s/\bMessageBox\(/MessageBoxA(/g;
-           s/\bFormatMessage\(/FormatMessageA(/g;
-           s/\bGetModuleHandle\(/GetModuleHandleA(/g;
-           s/\bGetModuleFileName\(/GetModuleFileNameA(/g;
-            ' "$f"
+          # 2) Приводим типы/функции к ANSI-версии
+          perl -0777 -i -pe '
+          s/\bLPCTSTR\b/const char*/g;
+          s/\bLPTSTR\b/char*/g;
+          s/\bTCHAR\b/char/g;
+
+          s/\bwsprintf\(/wsprintfA(/g;
+          s/\blstrlen\(/lstrlenA(/g;
+          s/\bwvsprintf\(/wvsprintfA(/g;
+
+          s/\bMessageBox\(/MessageBoxA(/g;
+          s/\bFormatMessage\(/FormatMessageA(/g;
+          s/\bGetModuleHandle\(/GetModuleHandleA(/g;
+          s/\bGetModuleFileName\(/GetModuleFileNameA(/g;
+          ' "$f"
           
       - name: Build wxWidgets 2.8.12 (static unicode release)
         shell: msys2 {0}
