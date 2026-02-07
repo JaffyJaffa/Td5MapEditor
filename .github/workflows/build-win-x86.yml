@@ -47,12 +47,8 @@ jobs:
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
           f="$WXWIN/src/msw/utilsexc.cpp"
 
-          # Replace "case -1:" with "case WAIT_FAILED:" (or 0xFFFFFFFF) to avoid narrowing error
-          # Some headers may not expose WAIT_FAILED depending on defines; 0xFFFFFFFF is always safe for DWORD.
+          # Исправление ошибки сужения (narrowing error) для современных компиляторов
           sed -i 's/^[[:space:]]*case[[:space:]]\+-1[[:space:]]*:/            case 0xFFFFFFFF:/' "$f"
-
-          # show the patched lines for debug
-          grep -n "case 0xFFFFFFFF" "$f" || true
           
       - name: Build wxWidgets 2.8.12 (static unicode release)
         shell: msys2 {0}
@@ -61,7 +57,8 @@ jobs:
           WXWIN="$PWD/deps/wxWidgets-2.8.12"
           mkdir -p "$WXWIN/lib/gcc_lib/mswu/wx"
           cd "$WXWIN/build/msw"
-          mingw32-make -j1 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0
+          # Ключевое исправление: CPPFLAGS="-D_WIN32_WINNT=0x0501" убирает ошибку NMTVITEMCHANGE
+          mingw32-make -j2 -f makefile.gcc BUILD=release SHARED=0 UNICODE=1 MONOLITHIC=0 CPPFLAGS="-D_WIN32_WINNT=0x0501"
           test -f "$WXWIN/lib/gcc_lib/mswu/wx/setup.h"
           echo "WXWIN=$WXWIN" >> "$GITHUB_ENV"
 
@@ -78,7 +75,7 @@ jobs:
           if not cbps:
               raise SystemExit("No .cbp found")
           cbp = next((p for p in cbps if p.name.lower() == "td5mapeditor.cbp"), cbps[0])
-          print("Using:", cbp)
+          print(f"Using: {cbp}")
 
           wxwin = Path(os.environ["WXWIN"])
           wx_cfg_inc = wxwin / "lib" / "gcc_lib" / "mswu"
@@ -92,9 +89,6 @@ jobs:
               return tag.split("}", 1)[-1]
 
           targets = [t for t in proj.iter() if strip(t.tag) == "Target"]
-          if not targets:
-              raise SystemExit("No <Target> in .cbp")
-
           target = next((t for t in targets if t.attrib.get("title","").lower()=="release"), targets[0])
 
           sources = []
@@ -103,8 +97,6 @@ jobs:
                   fn = u.attrib.get("filename","")
                   if fn.lower().endswith((".cpp",".c",".cc",".cxx")):
                       sources.append((root / fn).resolve())
-          if not sources:
-              raise SystemExit("No sources in .cbp")
 
           include_dirs = set()
           lib_dirs = set()
@@ -130,12 +122,14 @@ jobs:
           bdir.mkdir(exist_ok=True)
 
           cxx = "g++"
-          cxxflags = ["-O2","-pipe","-D__WXMSW__","-DwxUSE_UNICODE=1","-static-libgcc","-static-libstdc++"]
+          # Добавлен флаг -D_WIN32_WINNT=0x0501 для совместимости с wxWidgets
+          cxxflags = ["-O2", "-pipe", "-D__WXMSW__", "-DwxUSE_UNICODE=1", "-D_WIN32_WINNT=0x0501", "-static-libgcc", "-static-libstdc++"]
           incflags = [f"-I{d}" for d in include_dirs if d]
 
           objects = []
           for src in sources:
               obj = bdir / (src.stem + ".o")
+              print(f"Compiling: {src.name}")
               subprocess.check_call([cxx, "-c", str(src), "-o", str(obj), *cxxflags, *incflags])
               objects.append(str(obj))
 
@@ -155,7 +149,7 @@ jobs:
 
           out_exe = bdir / "Td5MapEditor.exe"
           subprocess.check_call([cxx, "-o", str(out_exe), *objects, *libdirflags, *libflags, *ldflags])
-          print("Built:", out_exe)
+          print(f"Built successfully: {out_exe}")
           PY
 
       - name: Upload artifact
